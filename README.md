@@ -1,5 +1,7 @@
 # raspberryRadar
 
+![Image](radar.png)
+
 A real-time flight radar display for the Raspberry Pi. Shows all aircraft flying over your location using live data from the OpenSky Network, rendered as a dark radar screen with Pygame.
 
 ---
