@@ -1,8 +1,15 @@
 # raspberryRadar
 
-![Image](radar.png)
+![Image](radar1.png)
+![Image](radar2.png)
 
-A real-time flight radar display for the Raspberry Pi. Shows all aircraft flying over your location using live data from the OpenSky Network, rendered as a dark radar screen with Pygame. Tap an aircraft to see its route, airline, and aircraft type, with a direct link to Flightradar24.
+A real-time flight radar display for the Raspberry Pi.
+Shows all aircraft flying over your location using live data from the OpenSky Network, rendered as a dark radar screen with Pygame.
+Tap an aircraft to see additional information like route, airline, and aircraft type.
+Additional sources are SkyLink API or Aviationstack (untested at the moment).
+Also there's a direct link to Flightradar24.
+
+
 
 ---
 
