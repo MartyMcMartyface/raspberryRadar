@@ -2,18 +2,22 @@
 """
 raspberryRadar – Main Display
 Radar view of live aircraft using the OpenSky API.
-Click/touch a label box to open a detail panel with AviationStack flight data.
+Click/touch a label box to open a detail panel with flight info.
+Flight info provider is configured in config.py (skylink or aviationstack).
 """
 
 import pygame
 import math
 import threading
 import time
+import webbrowser
 from datetime import datetime
 
 from config import (HOME_LAT, HOME_LON, HOME_NAME, RADIUS,
                     SCREEN_WIDTH, SCREEN_HEIGHT,
-                    UPDATE_INTERVAL, FULLSCREEN, AVIATIONSTACK_KEY)
+                    UPDATE_INTERVAL, FULLSCREEN,
+                    FLIGHTINFO_PROVIDER)
+from secrets import SKYLINK_KEY, AVIATIONSTACK_KEY
 from api import fetch_flights, distance_km, altitude_to_fl, velocity_kmh
 from flightinfo import fetch_flightinfo
 
@@ -31,11 +35,21 @@ ACCENT       = (55, 138, 221)
 
 def plane_color(altitude_m):
     if altitude_m > 8000:
-        return (55, 138, 221)   # Blue  – cruise
+        return (55, 138, 221)
     elif altitude_m > 3000:
-        return (29, 158, 117)   # Green – mid altitude
+        return (29, 158, 117)
     else:
-        return (186, 117,  23)  # Amber – low altitude
+        return (186, 117,  23)
+
+
+# ── Is any flight info provider configured? ──────────────────
+def _provider_active():
+    p = FLIGHTINFO_PROVIDER.lower().strip()
+    if p == "skylink":
+        return bool(SKYLINK_KEY)
+    if p == "aviationstack":
+        return bool(AVIATIONSTACK_KEY)
+    return False
 
 
 # ── Coordinates → screen position ────────────────────────────
@@ -75,12 +89,12 @@ def wrap_text(font, text, max_width):
 # ── Detail panel ──────────────────────────────────────────────
 def draw_detail_box(surface, flight, flightinfo, loading_info,
                     screen_w, screen_h, font_title, font_body, font_small):
-    PAD       = 20
+    PAD       = 16
     LABEL_W   = 100
-    COL_GAP   = 10
+    COL_GAP   = 8
     MAX_BOX_W = screen_w - 40
-    LINE_H    = 24
-    TITLE_H   = 50
+    LINE_H    = 20
+    TITLE_H   = 42
 
     cs    = flight["callsign"] or flight["icao"]
     fl    = altitude_to_fl(flight["altitude"])
@@ -95,6 +109,7 @@ def draw_detail_box(surface, flight, flightinfo, loading_info,
 
     # ── Base rows (always shown) ──────────────────────────────
     rows = [
+        ("src:OpenSky", "", TEXT_DIM),
         ("ICAO",         flight["icao"].upper(),                          TEXT_WHITE),
         ("Callsign",     cs,                                               TEXT_WHITE),
         ("Country",      flight["country"],                                TEXT_WHITE),
@@ -106,32 +121,58 @@ def draw_detail_box(surface, flight, flightinfo, loading_info,
         ("Distance",     f"{dist:.1f} km from {HOME_NAME}",               TEXT_WHITE),
     ]
 
-    # ── Flight plan rows (AviationStack) ─────────────────────
-    if AVIATIONSTACK_KEY:
+    # ── Flight info rows ──────────────────────────────────────
+    if _provider_active():
+        provider_name = {"skylink": "SkyLink", "aviationstack": "AviationStack"}.get(
+            FLIGHTINFO_PROVIDER.lower().strip(), FLIGHTINFO_PROVIDER)
         rows.append(("─" * 12, "", TEXT_DIM))
+        rows.append((f"src:{provider_name}", "", TEXT_DIM))
 
         if loading_info:
             rows.append(("Route", "Loading flight data...", TEXT_DIM))
         elif flightinfo:
             fi = flightinfo
-            orig = f"{fi['origin_iata']}  {fi['origin_name']}"
-            dest = f"{fi['dest_iata']}  {fi['dest_name']}"
+
+            # From / To — include IATA code and/or country if available
+            orig_iata    = fi.get("origin_iata", "")
+            dest_iata    = fi.get("dest_iata", "")
+            orig_country = fi.get("origin_country", "")
+            dest_country = fi.get("dest_country", "")
+
+            orig = f"{orig_iata}  {fi['origin_name']}".strip() if orig_iata else fi["origin_name"]
+            dest = f"{dest_iata}  {fi['dest_name']}".strip()   if dest_iata else fi["dest_name"]
+            if orig_country:
+                orig += f"  ({orig_country})"
+            if dest_country:
+                dest += f"  ({dest_country})"
+
             rows += [
-                ("From",          orig,                       ACCENT),
-                ("To",            dest,                       ACCENT),
-                ("Airline",       fi["airline"],              TEXT_WHITE),
-                ("Aircraft",      fi["aircraft_type"] or "–", TEXT_WHITE),
-                ("Dep. scheduled",fi["scheduled_dep"],        TEXT_WHITE),
-                ("Dep. actual",   fi["actual_dep"],           TEXT_WHITE),
-                ("Arr. scheduled",fi["scheduled_arr"],        TEXT_WHITE),
-                ("Arr. estimated",fi["estimated_arr"],        TEXT_WHITE),
+                ("From",         orig,                          ACCENT),
+                ("To",           dest,                          ACCENT),
+                ("Airline",      fi.get("airline") or "–",      TEXT_WHITE),
             ]
+
+            # Aircraft type — only shown if available (SkyLink doesn't provide it)
+            if fi.get("aircraft_type") and fi["aircraft_type"] != "–":
+                rows.append(("Aircraft", fi["aircraft_type"], TEXT_WHITE))
+
+            # Times — only shown if available (AviationStack provides these, SkyLink doesn't)
+            if fi.get("actual_dep") and fi["actual_dep"] != "–":
+                rows.append(("Departed", fi["actual_dep"], TEXT_WHITE))
+            if fi.get("estimated_arr") and fi["estimated_arr"] != "–":
+                rows.append(("Arrives", fi["estimated_arr"], TEXT_WHITE))
+            if fi.get("scheduled_dep") and fi["scheduled_dep"] != "–":
+                rows.append(("Dep. sched.", fi["scheduled_dep"], TEXT_DIM))
+            if fi.get("scheduled_arr") and fi["scheduled_arr"] != "–":
+                rows.append(("Arr. sched.", fi["scheduled_arr"], TEXT_DIM))
+
         else:
             rows.append(("Route", "No data available", TEXT_DIM))
 
     # ── Calculate box width ───────────────────────────────────
     min_w = font_title.size(cs)[0] + PAD * 2
-    val_w = max((font_body.size(v)[0] for _, v, _ in rows if v and v[0] != "─"), default=100)
+    val_w = max((font_body.size(v)[0] for _, v, _ in rows
+                  if v and not v.startswith("─")), default=100)
     W     = max(min_w, min(PAD + LABEL_W + COL_GAP + val_w + PAD, MAX_BOX_W))
     val_max_w = W - PAD - LABEL_W - COL_GAP - PAD
 
@@ -140,12 +181,15 @@ def draw_detail_box(surface, flight, flightinfo, loading_info,
     for label, value, color in rows:
         if label.startswith("─"):
             prepared.append(("sep", [], TEXT_DIM))
+        elif label.startswith("src:"):
+            prepared.append(("src", [label[4:]], TEXT_DIM))
         else:
             lines = wrap_text(font_body, value, val_max_w) if value else [""]
             prepared.append((label, lines, color))
 
-    total_lines = sum(1 if t == "sep" else len(lines) for t, lines, _ in prepared)
-    H = TITLE_H + total_lines * LINE_H + 30
+    total_lines = sum(1 if t in ("sep", "src") else len(lines) for t, lines, _ in prepared)
+    H = TITLE_H + total_lines * LINE_H + 42
+    H = min(H, screen_h - 16)
 
     x = max(10, (screen_w - W) // 2)
     y = max(10, (screen_h - H) // 2)
@@ -154,11 +198,11 @@ def draw_detail_box(surface, flight, flightinfo, loading_info,
     pygame.draw.rect(surface, DETAIL_BG,     (x, y, W, H), border_radius=10)
     pygame.draw.rect(surface, DETAIL_BORDER, (x, y, W, H), 2, border_radius=10)
 
-    surface.blit(font_title.render(cs, True, TEXT_WHITE), (x + PAD, y + 14))
+    surface.blit(font_title.render(cs, True, TEXT_WHITE), (x + PAD, y + 12))
     pygame.draw.line(surface, DETAIL_BORDER,
                      (x + 10, y + TITLE_H - 4), (x + W - 10, y + TITLE_H - 4), 1)
 
-    cursor_y = y + TITLE_H + 4
+    cursor_y = y + TITLE_H + 2
     for label, lines, color in prepared:
         if label == "sep":
             pygame.draw.line(surface, GRID,
@@ -166,16 +210,34 @@ def draw_detail_box(surface, flight, flightinfo, loading_info,
                              (x + W - PAD, cursor_y + LINE_H // 2), 1)
             cursor_y += LINE_H
             continue
-        surface.blit(font_small.render(label, True, TEXT_DIM), (x + PAD, cursor_y + 2))
+        if label == "src":
+            src_surf = font_small.render(lines[0], True, TEXT_DIM)
+            surface.blit(src_surf, (x + W - PAD - src_surf.get_width(), cursor_y + 1))
+            cursor_y += LINE_H
+            continue
+        surface.blit(font_small.render(label, True, TEXT_DIM), (x + PAD, cursor_y + 1))
         for line in lines:
             surface.blit(font_body.render(line, True, color),
                          (x + PAD + LABEL_W + COL_GAP, cursor_y))
             cursor_y += LINE_H
 
-    hint = font_small.render("Tap to close", True, TEXT_DIM)
-    surface.blit(hint, (x + W // 2 - hint.get_width() // 2, y + H - 20))
+    # ── Flightradar24 button ──────────────────────────────────
+    fr24_label = "Open in Flightradar24 →"
+    fr24_surf  = font_small.render(fr24_label, True, ACCENT)
+    fr24_w     = fr24_surf.get_width() + 20
+    fr24_h     = 22
+    fr24_x     = x + (W - fr24_w) // 2
+    fr24_y     = y + H - 30
+    fr24_rect  = pygame.Rect(fr24_x, fr24_y, fr24_w, fr24_h)
 
-    return pygame.Rect(x, y, W, H)
+    pygame.draw.rect(surface, (13, 30, 22), fr24_rect, border_radius=5)
+    pygame.draw.rect(surface, ACCENT, fr24_rect, 1, border_radius=5)
+    surface.blit(fr24_surf, (fr24_x + 10, fr24_y + 4))
+
+    hint = font_small.render("Tap elsewhere to close", True, TEXT_DIM)
+    surface.blit(hint, (x + W // 2 - hint.get_width() // 2, y + H - 13))
+
+    return pygame.Rect(x, y, W, H), fr24_rect
 
 
 # ── Main app ──────────────────────────────────────────────────
@@ -204,9 +266,9 @@ class FlightradarApp:
         self.selected     = None
         self.label_rects  = []
 
-        # Flight info state
-        self.flightinfo   = None    # currently loaded flight plan info
-        self.loading_info = False   # currently fetching?
+        self.flightinfo   = None
+        self.loading_info = False
+        self.fr24_rect    = None  # clickable area for the Flightradar24 button
 
         self._start_update_thread()
 
@@ -219,22 +281,18 @@ class FlightradarApp:
                 time.sleep(UPDATE_INTERVAL)
         threading.Thread(target=loop, daemon=True).start()
 
-    def _load_flightinfo(self, callsign):
-        """Fetch flight plan data in a background thread."""
+    def _load_flightinfo(self, callsign, icao24=None):
         self.flightinfo   = None
         self.loading_info = True
         def _fetch():
-            self.flightinfo   = fetch_flightinfo(callsign)
+            self.flightinfo   = fetch_flightinfo(callsign, icao24)
             self.loading_info = False
         threading.Thread(target=_fetch, daemon=True).start()
 
-    # ── Hit test ──────────────────────────────────────────────
     def _flight_at(self, mx, my):
-        # Check label boxes first (larger click target)
         for rect, f in self.label_rects:
             if rect.collidepoint(mx, my):
                 return f
-        # Fallback: aircraft triangle
         for f in self.flights:
             x, y = latlon_to_screen(f["lat"], f["lon"],
                                     self.cx, self.cy, self.scale)
@@ -242,7 +300,6 @@ class FlightradarApp:
                 return f
         return None
 
-    # ── Grid ──────────────────────────────────────────────────
     def draw_grid(self):
         for r in [0.25, 0.5, 0.75, 1.0]:
             px = int(self.max_px * r)
@@ -264,7 +321,6 @@ class FlightradarApp:
             self.font_sm.render(HOME_NAME, True, HOME_COLOR),
             (self.cx + 10, self.cy + 4))
 
-    # ── Aircraft ──────────────────────────────────────────────
     def draw_flights(self):
         self.label_rects = []
 
@@ -302,7 +358,6 @@ class FlightradarApp:
 
             self.label_rects.append((rect, f))
 
-    # ── Status bar ────────────────────────────────────────────
     def draw_statusbar(self):
         live_col = HOME_COLOR if not self.loading else (140, 90, 20)
         self.screen.blit(
@@ -324,7 +379,6 @@ class FlightradarApp:
             self.screen.blit(self.font_xs.render(txt, True, col),
                              (SCREEN_WIDTH - 90, SCREEN_HEIGHT - 15 - i * 14))
 
-    # ── Main loop ─────────────────────────────────────────────
     def run(self):
         clock   = pygame.time.Clock()
         running = True
@@ -340,6 +394,7 @@ class FlightradarApp:
                             self.selected     = None
                             self.flightinfo   = None
                             self.loading_info = False
+                            self.fr24_rect    = None
                         else:
                             running = False
 
@@ -351,14 +406,19 @@ class FlightradarApp:
                         mx, my = event.pos
 
                     if self.selected:
-                        self.selected     = None
-                        self.flightinfo   = None
-                        self.loading_info = False
+                        if self.fr24_rect and self.fr24_rect.collidepoint(mx, my):
+                            url = f"https://www.flightradar24.com/{(self.selected['callsign'] or self.selected['icao']).strip()}"
+                            webbrowser.open(url)
+                        else:
+                            self.selected     = None
+                            self.flightinfo   = None
+                            self.loading_info = False
+                            self.fr24_rect    = None
                     else:
                         hit = self._flight_at(mx, my)
                         if hit:
                             self.selected = hit
-                            self._load_flightinfo(hit["callsign"])
+                            self._load_flightinfo(hit["callsign"], hit["icao"])
 
             self.screen.fill(BG)
             self.draw_grid()
@@ -370,11 +430,11 @@ class FlightradarApp:
                               if f["icao"] == self.selected["icao"]), None)
                 if match:
                     self.selected = match
-                draw_detail_box(
+                self.fr24_rect = draw_detail_box(
                     self.screen, self.selected,
                     self.flightinfo, self.loading_info,
                     SCREEN_WIDTH, SCREEN_HEIGHT,
-                    self.font_title, self.font_md, self.font_sm)
+                    self.font_title, self.font_md, self.font_sm)[1]
 
             pygame.display.flip()
             clock.tick(30)
