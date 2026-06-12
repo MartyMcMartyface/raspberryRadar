@@ -25,12 +25,23 @@ SCREEN_HEIGHT = 480
 # Fullscreen mode: True = fullscreen, False = windowed (useful for testing)
 FULLSCREEN = False
 
-# OpenSky credentials (optional – increases request limit)
-# Free account at https://opensky-network.org/
-OPENSKY_USER = ""
-OPENSKY_PASS = ""
+# ── Secrets ───────────────────────────────────────────────────
+# Path to the JSON file holding all API keys and OpenSky OAuth2 credentials.
+# See secrets.template.json for the expected structure.
+# This file is gitignored and must be created locally.
+SECRETS_FILE = "secrets.json"
 
-# AviationStack API key for flight plan data (route, times, aircraft type)
-# Free account at https://aviationstack.com/
-# Leave empty to disable this feature
-AVIATIONSTACK_KEY = ""
+# ── Flight info provider ─────────────────────────────────────
+# Choose which API to use for flight plan details (route, times, aircraft)
+# Options: "skylink" or "aviationstack"
+FLIGHTINFO_PROVIDER = "skylink"
+
+# ── Static lookup tables (CSV files in the project folder) ───
+# ICAO airport code -> airport name, country code
+AIRPORTS_CSV = "iata-icao.csv"
+
+# Country code -> country name
+COUNTRIES_CSV = "countries.csv"
+
+# ICAO airline code -> airline name
+AIRLINES_CSV = "icao_airlines.csv"

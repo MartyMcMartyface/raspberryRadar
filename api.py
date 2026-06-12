@@ -2,11 +2,77 @@
 """
 raspberryRadar – OpenSky API
 Fetches live aircraft data within the configured radius.
+Uses OAuth2 client credentials flow for authentication.
+Token is fetched automatically and refreshed before expiry.
 """
 
 import requests
 import math
-from config import HOME_LAT, HOME_LON, RADIUS, OPENSKY_USER, OPENSKY_PASS
+from datetime import datetime, timedelta
+from config import HOME_LAT, HOME_LON, RADIUS
+from secrets import OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET
+
+# ── OAuth2 token endpoint ─────────────────────────────────────
+TOKEN_URL = (
+    "https://auth.opensky-network.org/auth/realms/opensky-network"
+    "/protocol/openid-connect/token"
+)
+TOKEN_REFRESH_MARGIN = 60   # refresh token this many seconds before expiry
+
+
+class _TokenManager:
+    """Fetches and caches an OAuth2 Bearer token for OpenSky."""
+
+    def __init__(self):
+        self._token      = None
+        self._expires_at = None
+        self._client_id     = OPENSKY_CLIENT_ID
+        self._client_secret = OPENSKY_CLIENT_SECRET
+
+    def get_token(self):
+        """Returns a valid Bearer token, refreshing if needed."""
+        if not self._client_id or not self._client_secret:
+            return None
+        if self._token and self._expires_at and datetime.now() < self._expires_at:
+            return self._token
+        return self._refresh()
+
+    def _refresh(self):
+        try:
+            resp = requests.post(
+                TOKEN_URL,
+                data={
+                    "grant_type":    "client_credentials",
+                    "client_id":     self._client_id,
+                    "client_secret": self._client_secret,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data            = resp.json()
+            self._token     = data["access_token"]
+            expires_in      = data.get("expires_in", 1800)
+            self._expires_at = datetime.now() + timedelta(
+                seconds=expires_in - TOKEN_REFRESH_MARGIN
+            )
+            print(f"OpenSky token refreshed, valid for {expires_in}s")
+            return self._token
+        except Exception as e:
+            print(f"OpenSky token refresh failed: {e}")
+            self._token = None
+            return None
+
+    def headers(self):
+        """Returns Authorization headers dict, or empty dict for anonymous access."""
+        token = self.get_token()
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+        return {}
+
+
+# Single shared token manager instance
+_token_manager = _TokenManager()
 
 
 def fetch_flights():
@@ -27,13 +93,13 @@ def fetch_flights():
     )
 
     try:
-        if OPENSKY_USER and OPENSKY_PASS:
-            resp = requests.get(url, auth=(OPENSKY_USER, OPENSKY_PASS), timeout=10)
-        else:
-            resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=_token_manager.headers(), timeout=10)
 
+        if resp.status_code == 429:
+            print("OpenSky rate limit reached (429) – retrying next interval")
+            return []
         if resp.status_code != 200:
-            print(f"API error: {resp.status_code}")
+            print(f"OpenSky API error: {resp.status_code}")
             return []
 
         data = resp.json()
@@ -60,7 +126,7 @@ def fetch_flights():
         return flights
 
     except Exception as e:
-        print(f"Connection error: {e}")
+        print(f"OpenSky connection error: {e}")
         return []
 
 
